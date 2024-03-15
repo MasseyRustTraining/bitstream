@@ -1,0 +1,5 @@
+struct BitStream {
+}
+
+impl BitStream {
+}
