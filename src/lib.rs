@@ -92,7 +92,8 @@ impl BitStream {
         }
     }
 
-    pub fn extract(&mut self, mut len: usize) -> Option<u64> {
+    pub fn extract(&mut self, mut len: usize) -> Option<Chunk> {
+        assert!(len <= 8 * std::mem::size_of::<Chunk>());
         if len == 0 {
             return Some(0);
         }
