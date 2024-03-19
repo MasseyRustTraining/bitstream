@@ -1,154 +1,103 @@
 use std::collections::VecDeque;
 
+/// The que is a [VecDeque] of these chunks.
 type Chunk = u64;
 
-#[derive(Default)]
-pub struct BitStream {
-    /// Each chunk is a sequence of bits ordered LSB→MSB.
-    /// (Lowest-order bits are first in and first out.)
-    /// Partial chunks are right-justified.
-    q: VecDeque<Chunk>,
+/// Number of bits in a chunk.
+const NCHUNK: usize = 8 * std::mem::size_of::<Chunk>();
 
-    /// Number of used bits in the front and back chunk of
-    /// the queue.
-    used: (usize, usize),
+/// Bitmask of `len` bits.
+fn mask(len: usize) -> u64 {
+    if len == 64 {
+        return !0;
+    }
+    (1 << len as u32) - 1
+}
 
-    /// Number of bits in the queue.
+/// An "end" of the queue may be partially filled.
+#[derive(Debug, Clone, Default)]
+struct End {
     len: usize,
+    bits: Chunk,
+}
+
+impl End {
+    #[cfg(test)]
+    pub fn check_invariant(&self) {
+        assert!(len < NCHUNK);
+    }
+}
+
+#[derive(Debug, Clone)]
+/// Each chunk is a sequence of bits ordered LSB→MSB.
+/// (Lowest-order bits are first in and first out.)
+/// Partial chunks are right-justified.
+pub enum BitStream {
+    /// Queue is empty.
+    Empty,
+    /// Queue is length one, so back and front are the same.
+    Single(End),
+    /// Queue is length two+, so back and front are different.
+    Multiple { back: End, q: VecDeque<Chunk>, front: End },
+}
+use BitStream::*;
+
+impl Default for BitStream {
+    fn default() -> Self {
+        Empty
+    }
 }
 
 impl BitStream {
-    const NCHUNK: usize = 8 * std::mem::size_of::<Chunk>();
 
-    fn mask(len: usize) -> u64 {
-        if len == 64 {
-            return !0;
-        }
-        (1 << len as u32) - 1
+    pub fn take(&mut self) -> Self {
+        std::mem::replace(self, Empty)
     }
 
-    #[cfg(test)]
-    /// If the queue length is:
-    /// * 0 chunks: these should be 0.
-    /// * 1 chunk: these should be the same as [len].
-    /// * 2 or more chunks: [len] should be
-    ///       NCHUNK * (q.len() - 2) + used.0 + used.1
-    pub fn check_length_invariant(&self) {
-        match self.q.len() {
-            0 => {
-                assert_eq!(self.len, 0);
-                assert_eq!(self.used, (0, 0));
-            }
-            1 => {
-                assert!(self.len > 0 && self.len <= Self::NCHUNK);
-                assert_eq!(self.used, (self.len, self.len));
-            }
-            n => {
-                assert!(self.used.0 > 0);
-                assert!(self.used.1 > 0);
-                let len = Self::NCHUNK * (n - 2) + self.used.0 + self.used.1;
-                assert_eq!(self.len, len);
-            }
-        }
-    }
-
-    pub fn insert<T: Into<Chunk>>(&mut self, x: T, mut len: usize) {
+    pub fn insert<T: Into<Chunk>>(&mut self, x: T, len: usize) {
         assert!(len <= 8 * std::mem::size_of::<T>());
         if len == 0 {
             return;
         }
-        let mut bits = x.into() & Self::mask(len);
+        let bits = x.into() & mask(len);
         
-        if self.q.is_empty() {
-            self.used = (len, len);
-            self.q.push_back(bits);
-            self.len += len;
-            return;
-        }
-
-        let nused = self.used.0;
-        if nused < Self::NCHUNK {
-            // Fill into back chunk.
-            let mut chunk = self.q.pop_back().unwrap();
-            let nbits = usize::min(Self::NCHUNK - nused, len);
-            chunk |= (bits & Self::mask(nbits)) << nused as u32;
-            bits >>= nbits as u32;
-            self.q.push_back(chunk);
-            self.len += nbits;
-            self.used.0 += nbits;
-            if self.q.len() == 1 {
-                self.used.1 = self.used.0;
+        let value = self.take();
+        match value {
+            Empty => {
+                if len < NCHUNK {
+                    *self = Single(End{ bits, len });
+                } else {
+                    let back = End::default();
+                    let mut q = VecDeque::with_capacity(1);
+                    q.push_back(bits);
+                    let front = End::default();
+                    *self = Multiple { back, q, front };
+                }
             }
-            len -= nbits;
-        }
-        if len > 0 {
-            // Start a new back chunk.
-            self.q.push_back(bits);
-            self.used.0 = len;
-            if self.q.len() == 1 {
-                self.used.1 = self.used.0;
-            }
-            self.len += len;
+            Single(_) => todo!(),
+            Multiple{..} => todo!(),
         }
     }
 
-    pub fn extract(&mut self, mut len: usize) -> Option<u64> {
-        if len == 0 {
-            return Some(0);
-        }
-        if len > self.len {
-            return None;
-        }
-
-        let mut bits = 0;
-        let nbits = usize::min(Self::NCHUNK - self.used.1, len);
-        let mut qbits = self.q.pop_front().unwrap();
-        bits |= qbits & Self::mask(nbits);
-        len -= nbits;
-        self.len -= nbits;
-        self.used.1 -= nbits;
-        if self.q.len() == 0 {
-            self.used.0 = self.used.1;
-        }
-
-        if self.used.1 > 0 {
-            qbits >>= nbits as u32;
-            self.q.push_front(qbits);
-            return Some(bits);
-        }
-
-        if len == 0 {
-            return Some(bits);
-        }
-
-        qbits = self.q.pop_front().unwrap();
-        if self.q.is_empty() {
-            self.used.1 = self.used.0;
-        } else {
-            self.used.1 = Self::NCHUNK;
-        }
-        bits |= (qbits << nbits) & Self::mask(len + nbits);
-        self.len -= len;
-        self.used.1 -= len;
-        if self.q.is_empty() {
-            self.used.0 = self.used.1;
-        }
-        if self.used.1 > 0 {
-            qbits >>= len as u32;
-            self.q.push_front(qbits);
-        }
-
-        Some(bits)
+    pub fn extract(&mut self, _len: usize) -> Option<u64> {
+        todo!()
     }
 
     /// Length in bits.
     pub fn len(&self) -> usize {
-        self.len
+        match self {
+            Empty => 0,
+            Single(end) => end.len,
+            Multiple { back, q, front } => back.len + q.len() * NCHUNK + front.len,
+        }
     }
 
 
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        match self {
+            Empty => true,
+            _ => false,
+        }
     }
 }
 
