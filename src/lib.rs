@@ -67,7 +67,7 @@ impl BitStream {
         }
 
         let nused = self.used.0;
-        if nused > 0 {
+        if nused < Self::NCHUNK {
             // Fill into back chunk.
             let mut chunk = self.q.pop_back().unwrap();
             let nbits = usize::min(Self::NCHUNK - nused, len);
