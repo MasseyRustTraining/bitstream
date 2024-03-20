@@ -21,8 +21,8 @@ pub struct End {
     bits: Chunk,
 }
 
+#[cfg(test)]
 impl End {
-    #[cfg(test)]
     pub fn check_invariant(&self) {
         assert!(self.len < NCHUNK);
     }
@@ -59,57 +59,55 @@ impl BitStream {
         }
         let bits = x.into() & mask(len);
 
-        let value = self.take();
-        match value {
-            Empty => {
-                if len < NCHUNK {
-                    *self = Single(End { bits, len });
-                } else {
-                    let back = End::default();
-                    let mut q = VecDeque::with_capacity(1);
-                    q.push_back(bits);
-                    let front = End::default();
-                    *self = Multiple { back, q, front };
-                }
+        let insert_with_carry = |end: &mut End| -> Option<Chunk> {
+            if len + end.len < NCHUNK {
+                end.bits |= bits << end.len;
+                end.len += len;
+                None
+            } else {
+                let used = NCHUNK - end.len;
+                end.bits |= (bits & mask(used)) << end.len as u32;
+                let carry = end.bits;
+                end.bits = bits >> used as u32;
+                end.len = len - used;
+                Some(carry)
             }
-            Single(mut end) => {
-                if len + end.len < NCHUNK {
-                    end.bits |= bits << end.len;
-                    end.len += len;
-                    *self = Single(end);
-                } else {
-                    let used = NCHUNK - end.len;
-                    end.bits |= (bits & mask(used)) << end.len as u32;
-                    let mut q = VecDeque::with_capacity(1);
-                    q.push_back(end.bits);
-                    end.bits = bits >> used as u32;
-                    end.len = len - used;
+        };
 
-                    let back = end;
-                    let front = End::default();
-                    *self = Multiple { back, q, front };
-                }
+        let to_multiple = |end: End, carry: Chunk| -> BitStream {
+            let back = end;
+            let mut q = VecDeque::with_capacity(1);
+            q.push_back(carry);
+            let front = End::default();
+            Multiple { back, q, front }
+        };
+
+        let promote = |mut end: End| -> BitStream {
+            match insert_with_carry(&mut end) {
+                None => Single(end),
+                Some(carry) => to_multiple(end, carry),
             }
+        };
+
+        let value = self.take();
+        *self = match value {
+            Empty => {
+                let end = End::default();
+                promote(end)
+            }
+            Single(end) => promote(end),
             Multiple {
                 mut back,
                 mut q,
                 front,
-            } => {
-                if len + back.len < NCHUNK {
-                    back.bits |= bits << back.len;
-                    back.len += len;
-                    *self = Multiple { back, q, front };
-                } else {
-                    let used = NCHUNK - back.len;
-                    back.bits |= (bits & mask(used)) << back.len as u32;
-                    q.push_back(back.bits);
-                    back.bits = bits >> used as u32;
-                    back.len = len - used;
-
-                    *self = Multiple { back, q, front };
+            } => match insert_with_carry(&mut back) {
+                None => Multiple { back, q, front },
+                Some(carry) => {
+                    q.push_back(carry);
+                    Multiple { back, q, front }
                 }
-            }
-        }
+            },
+        };
     }
 
     pub fn extract(&mut self, _len: usize) -> Option<u64> {
