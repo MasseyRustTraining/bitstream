@@ -16,7 +16,7 @@ fn mask(len: usize) -> u64 {
 
 /// An "end" of the queue may be partially filled.
 #[derive(Debug, Clone, Default)]
-struct End {
+pub struct End {
     len: usize,
     bits: Chunk,
 }
@@ -24,32 +24,30 @@ struct End {
 impl End {
     #[cfg(test)]
     pub fn check_invariant(&self) {
-        assert!(len < NCHUNK);
+        assert!(self.len < NCHUNK);
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 /// Each chunk is a sequence of bits ordered LSB→MSB.
 /// (Lowest-order bits are first in and first out.)
 /// Partial chunks are right-justified.
 pub enum BitStream {
     /// Queue is empty.
+    #[default]
     Empty,
     /// Queue is length one, so back and front are the same.
     Single(End),
     /// Queue is length two+, so back and front are different.
-    Multiple { back: End, q: VecDeque<Chunk>, front: End },
+    Multiple {
+        back: End,
+        q: VecDeque<Chunk>,
+        front: End,
+    },
 }
 use BitStream::*;
 
-impl Default for BitStream {
-    fn default() -> Self {
-        Empty
-    }
-}
-
 impl BitStream {
-
     pub fn take(&mut self) -> Self {
         std::mem::replace(self, Empty)
     }
@@ -60,12 +58,12 @@ impl BitStream {
             return;
         }
         let bits = x.into() & mask(len);
-        
+
         let value = self.take();
         match value {
             Empty => {
                 if len < NCHUNK {
-                    *self = Single(End{ bits, len });
+                    *self = Single(End { bits, len });
                 } else {
                     let back = End::default();
                     let mut q = VecDeque::with_capacity(1);
@@ -74,8 +72,43 @@ impl BitStream {
                     *self = Multiple { back, q, front };
                 }
             }
-            Single(_) => todo!(),
-            Multiple{..} => todo!(),
+            Single(mut end) => {
+                if len + end.len < NCHUNK {
+                    end.bits |= bits << end.len;
+                    end.len += len;
+                    *self = Single(end);
+                } else {
+                    let used = NCHUNK - end.len;
+                    end.bits |= (bits & mask(used)) << end.len as u32;
+                    let mut q = VecDeque::with_capacity(1);
+                    q.push_back(end.bits);
+                    end.bits = bits >> used as u32;
+                    end.len = len - used;
+
+                    let back = end;
+                    let front = End::default();
+                    *self = Multiple { back, q, front };
+                }
+            }
+            Multiple {
+                mut back,
+                mut q,
+                front,
+            } => {
+                if len + back.len < NCHUNK {
+                    back.bits |= bits << back.len;
+                    back.len += len;
+                    *self = Multiple { back, q, front };
+                } else {
+                    let used = NCHUNK - back.len;
+                    back.bits |= (bits & mask(used)) << back.len as u32;
+                    q.push_back(back.bits);
+                    back.bits = bits >> used as u32;
+                    back.len = len - used;
+
+                    *self = Multiple { back, q, front };
+                }
+            }
         }
     }
 
@@ -92,11 +125,19 @@ impl BitStream {
         }
     }
 
-
     pub fn is_empty(&self) -> bool {
+        matches!(self, Empty)
+    }
+
+    #[cfg(test)]
+    fn check_invariant(&self) {
         match self {
-            Empty => true,
-            _ => false,
+            Empty => (),
+            Single(end) => end.check_invariant(),
+            Multiple { back, front, .. } => {
+                back.check_invariant();
+                front.check_invariant();
+            }
         }
     }
 }
@@ -106,14 +147,13 @@ fn test_insert() {
     let mut bs = BitStream::default();
     bs.insert(0b10010u8, 5);
     assert_eq!(bs.len(), 5);
-    bs.check_length_invariant();
+    bs.check_invariant();
 
     let mut len = 5;
     for _ in 0..40 {
         bs.insert(0b01110u8, 5);
         len += 5;
         assert_eq!(bs.len(), len);
-        bs.check_length_invariant();
     }
 }
 
@@ -131,7 +171,7 @@ fn test_extract() {
         assert_eq!(bits, 0b010);
         len -= 3;
         assert_eq!(bs.len(), len);
-        bs.check_length_invariant();
+        bs.check_invariant();
     }
     assert!(bs.is_empty());
     assert!(bs.extract(1).is_none());
