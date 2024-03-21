@@ -110,8 +110,95 @@ impl BitStream {
         };
     }
 
-    pub fn extract(&mut self, _len: usize) -> Option<u64> {
-        todo!()
+    pub fn extract(&mut self, len: usize) -> Option<u64> {
+        if len == 0 {
+            return Some(0);
+        }
+
+        let canon = |repr: BitStream| -> BitStream {
+            match repr {
+                Empty => Empty,
+                Single(end) => {
+                    if end.len == 0 {
+                        Empty
+                    } else {
+                        Single(end)
+                    }
+                }
+                Multiple {
+                    back,
+                    mut q,
+                    mut front,
+                } => {
+                    if front.len == NCHUNK {
+                        q.push_front(front.bits);
+                        front.len = 0;
+                        front.bits = 0;
+                    }
+                    if q.is_empty() {
+                        if back.len + front.len == 0 {
+                            Empty
+                        } else if back.len + front.len < NCHUNK {
+                            front.bits |= back.bits << front.len as u32;
+                            front.len += back.len;
+                            Single(front)
+                        } else {
+                            Multiple { back, q, front }
+                        }
+                    } else {
+                        Multiple { back, q, front }
+                    }
+                }
+            }
+        };
+
+        let value = self.take();
+        let (new_value, result) = match value {
+            Empty => (Empty, None),
+            Single(mut end) => {
+                if len <= end.len {
+                    let bits = end.bits & mask(len);
+                    end.bits >>= len as u32;
+                    end.len -= len;
+                    (Single(end), Some(bits))
+                } else {
+                    (Single(end), None)
+                }
+            }
+            Multiple {
+                back,
+                mut q,
+                mut front,
+            } => {
+                if len <= front.len {
+                    let bits = front.bits & mask(len);
+                    front.bits >>= len as u32;
+                    front.len -= len;
+                    (Multiple { back, q, front }, Some(bits))
+                } else if let Some(borrow) = q.pop_front() {
+                    let needed = len - front.len;
+                    let mut bits = borrow & mask(needed);
+                    bits <<= front.len;
+                    bits |= front.bits & mask(front.len);
+                    front.bits = borrow >> needed as u32;
+                    front.len = NCHUNK - needed;
+                    (Multiple { back, q, front }, Some(bits))
+                } else if len <= front.len + back.len {
+                    assert!(q.is_empty());
+                    front.bits |= back.bits << front.len as u32;
+                    front.len += back.len;
+                    let bits = front.bits & mask(len);
+                    front.bits >>= len;
+                    front.len -= len;
+                    (Single(front), Some(bits))
+                } else {
+                    assert!(q.is_empty());
+                    (Multiple { back, q, front }, None)
+                }
+            }
+        };
+        *self = canon(new_value);
+        result
     }
 
     /// Length in bits.
@@ -152,6 +239,7 @@ fn test_insert() {
         bs.insert(0b01110u8, 5);
         len += 5;
         assert_eq!(bs.len(), len);
+        bs.check_invariant();
     }
 }
 
@@ -171,6 +259,9 @@ fn test_extract() {
         assert_eq!(bs.len(), len);
         bs.check_invariant();
     }
+    assert_eq!(0b10, bs.extract(2).unwrap());
+    assert!(!bs.is_empty());
+    assert_eq!(0b0, bs.extract(1).unwrap());
     assert!(bs.is_empty());
     assert!(bs.extract(1).is_none());
 }
