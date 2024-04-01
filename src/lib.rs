@@ -1,7 +1,33 @@
 use std::collections::VecDeque;
 
-/// The que is a [VecDeque] of these chunks.
+/// The bitstream is built of these chunks.
 pub type Chunk = u64;
+
+#[derive(Debug, Clone, Default)]
+pub struct BitStream(Bits);
+
+impl BitStream {
+    pub fn take(&mut self) -> Self {
+        let contents = self.0.take();
+        Self(contents)
+    }
+
+    pub fn insert<T: Into<Chunk>>(&mut self, x: T, len: usize) {
+        self.0.insert(x, len);
+    }
+
+    pub fn extract(&mut self, len: usize) -> Option<Chunk> {
+        self.0.extract(len)
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
 
 /// Number of bits in a chunk.
 pub const NCHUNK: usize = 8 * std::mem::size_of::<Chunk>();
@@ -16,14 +42,14 @@ fn mask(len: usize) -> Chunk {
 
 /// An "end" of the queue may be partially filled.
 #[derive(Debug, Clone, Default)]
-pub struct End {
+struct End {
     len: usize,
     bits: Chunk,
 }
 
 #[cfg(test)]
 impl End {
-    pub fn check_invariant(&self) {
+    fn check_invariant(&self) {
         assert!(self.len < NCHUNK);
     }
 }
@@ -32,7 +58,7 @@ impl End {
 /// Each chunk is a sequence of bits ordered LSB→MSB.
 /// (Lowest-order bits are first in and first out.)
 /// Partial chunks are right-justified.
-pub enum BitStream {
+enum Bits {
     /// Queue is empty.
     #[default]
     Empty,
@@ -45,14 +71,14 @@ pub enum BitStream {
         front: End,
     },
 }
-use BitStream::*;
+use Bits::*;
 
-impl BitStream {
-    pub fn take(&mut self) -> Self {
+impl Bits {
+    fn take(&mut self) -> Self {
         std::mem::replace(self, Empty)
     }
 
-    pub fn insert<T: Into<Chunk>>(&mut self, x: T, len: usize) {
+    fn insert<T: Into<Chunk>>(&mut self, x: T, len: usize) {
         assert!(len <= 8 * std::mem::size_of::<T>());
         if len == 0 {
             return;
@@ -74,7 +100,7 @@ impl BitStream {
             }
         };
 
-        let to_multiple = |end: End, carry: Chunk| -> BitStream {
+        let to_multiple = |end: End, carry: Chunk| -> Self {
             let back = end;
             let mut q = VecDeque::with_capacity(1);
             q.push_back(carry);
@@ -82,7 +108,7 @@ impl BitStream {
             Multiple { back, q, front }
         };
 
-        let promote = |mut end: End| -> BitStream {
+        let promote = |mut end: End| -> Self {
             match insert_with_carry(&mut end) {
                 None => Single(end),
                 Some(carry) => to_multiple(end, carry),
@@ -110,12 +136,12 @@ impl BitStream {
         };
     }
 
-    pub fn extract(&mut self, len: usize) -> Option<Chunk> {
+    fn extract(&mut self, len: usize) -> Option<Chunk> {
         if len == 0 {
             return Some(0);
         }
 
-        let canon = |repr: BitStream| -> BitStream {
+        let canon = |repr: Self| -> Self {
             match repr {
                 Empty => Empty,
                 Single(end) => {
@@ -202,7 +228,7 @@ impl BitStream {
     }
 
     /// Length in bits.
-    pub fn len(&self) -> usize {
+    fn len(&self) -> usize {
         match self {
             Empty => 0,
             Single(end) => end.len,
@@ -210,7 +236,7 @@ impl BitStream {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         matches!(self, Empty)
     }
 
@@ -228,8 +254,8 @@ impl BitStream {
 }
 
 #[test]
-fn test_insert() {
-    let mut bs = BitStream::default();
+fn test_bits_insert() {
+    let mut bs = Bits::default();
     bs.insert(0b10010u8, 5);
     assert_eq!(bs.len(), 5);
     bs.check_invariant();
@@ -244,8 +270,8 @@ fn test_insert() {
 }
 
 #[test]
-fn test_extract() {
-    let mut bs = BitStream::default();
+fn test_bits_extract() {
+    let mut bs = Bits::default();
     let mut len = 0;
     for _ in 0..80 {
         bs.insert(0b010u8, 3);
