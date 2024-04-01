@@ -1,14 +1,14 @@
 use std::collections::VecDeque;
 
 /// The que is a [VecDeque] of these chunks.
-type Chunk = u64;
+pub type Chunk = u64;
 
 /// Number of bits in a chunk.
-const NCHUNK: usize = 8 * std::mem::size_of::<Chunk>();
+pub const NCHUNK: usize = 8 * std::mem::size_of::<Chunk>();
 
 /// Bitmask of `len` bits.
-fn mask(len: usize) -> u64 {
-    if len == 64 {
+fn mask(len: usize) -> Chunk {
+    if len == NCHUNK {
         return !0;
     }
     (1 << len as u32) - 1
@@ -110,7 +110,7 @@ impl BitStream {
         };
     }
 
-    pub fn extract(&mut self, len: usize) -> Option<u64> {
+    pub fn extract(&mut self, len: usize) -> Option<Chunk> {
         if len == 0 {
             return Some(0);
         }
